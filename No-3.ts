@@ -1,30 +1,58 @@
 lass UserService {
   async getUsersWithOrders(): Promise<UserWithOrders[]> {
-    const users = await db.query('SELECT * FROM users');
+    // 修正: JOIN + GROUP BY で1クエリに最適化
+    const result = await db.query(`
+      SELECT 
+        u.id, u.name, u.email,
+        o.id as order_id, o.total, o.created_at as order_date,
+        oi.id as item_id, oi.product_id, oi.quantity, oi.price
+      FROM users u
+      LEFT JOIN orders o ON u.id = o.user_id
+      LEFT JOIN order_items oi ON o.id = oi.order_id
+      ORDER BY u.id, o.id, oi.id
+    `);
     
-    const result = [];
-    for (const user of users) {
-      // N+1問題: ユーザー数だけクエリ実行
-      const orders = await db.query(
-        'SELECT * FROM orders WHERE user_id = ?',
-        [user.id]
-      );
-      
-      // さらにN+M問題
-      for (const order of orders) {
-        const items = await db.query(
-          'SELECT * FROM order_items WHERE order_id = ?',
-          [order.id]
-        );
-        order.items = items;
+    return this.transformQueryResult(result);
+  }
+  
+  private transformQueryResult(rows: any[]): UserWithOrders[] {
+    const map = new Map<number, UserWithOrders>();
+    
+    for (const row of rows) {
+      if (!map.has(row.id)) {
+        map.set(row.id, {
+          id: row.id,
+          name: row.name,
+          email: row.email,
+          orders: []
+        });
       }
       
-      result.push({
-        ...user,
-        orders: orders
-      });
+      const user = map.get(row.id)!;
+      
+      if (row.order_id) {
+        let order = user.orders.find(o => o.id === row.order_id);
+        if (!order) {
+          order = {
+            id: row.order_id,
+            total: row.total,
+            createdAt: row.order_date,
+            items: []
+          };
+          user.orders.push(order);
+        }
+        
+        if (row.item_id) {
+          order.items.push({
+            id: row.item_id,
+            productId: row.product_id,
+            quantity: row.quantity,
+            price: row.price
+          });
+        }
+      }
     }
     
-    return result;
+    return Array.from(map.values());
   }
 }
